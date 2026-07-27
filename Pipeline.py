@@ -1,10 +1,9 @@
 import numpy as np
 import cv2
+import torch
+from ultralytics import YOLO
 
 class Pipeline:
-    def __init__(self):
-        pass
-
     @staticmethod
     def get_perimeter_histogram(img, band_width):
         """
@@ -38,4 +37,16 @@ class Pipeline:
             return True
         else:
             return False
+
+    def __init__(self, yolo_weights_path, device_name=None):
         
+        # 1. Setup Device
+        if device_name is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device_name)
+
+        print(f"Initializing Pipeline on: {self.device}")
+
+        # 2. Load model
+        self.yolo_model = YOLO(yolo_weights_path)

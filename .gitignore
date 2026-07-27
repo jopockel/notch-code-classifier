@@ -4,3 +4,6 @@
 
 # Ignore Python cache files
 __pycache__/
+
+#Ignore created yolo dataset files
+Training_files/yolo_dataset/
