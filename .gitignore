@@ -1,0 +1,6 @@
+# Ignore Jupyter Notebook checkpoints (autosaves)
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Ignore Python cache files
+__pycache__/
