@@ -5,5 +5,13 @@
 # Ignore Python cache files
 __pycache__/
 
-#Ignore created yolo dataset files
+# Ignore created yolo dataset files
 Training_files/yolo_dataset/
+
+
+# Ignore yolo model weights and results
+Training_files/runs/
+*.pt
+
+# Ignore SVM model weights and results
+*.pkl
