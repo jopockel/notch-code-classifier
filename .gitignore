@@ -16,3 +16,6 @@ Training_files/runs/
 # Ignore SVM model weights and results
 *.pkl
 *.npz
+
+# Ignore downloaded assets
+assets/
