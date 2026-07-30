@@ -44,24 +44,29 @@ class Pipeline:
             return False
 
     @staticmethod
-    def _get_film_bounding_box(img):
-        """Internal helper: Finds the main bounding box of the film material."""
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 20, 80)
+    def _find_largest_true_segment(bool_array):
+        """
+        Internal helper: Finds the start and end indices of the longest 
+        contiguous sequence of True values in a 1D boolean array.
+        """
+        # Pad with False at both ends so we always detect transitions
+        padded = np.concatenate(([False], bool_array, [False]))
         
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        # np.diff finds where the array changes. 1 means False->True, -1 means True->False
+        diff = np.diff(padded.astype(int))
         
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        starts = np.where(diff == 1)[0]
+        ends = np.where(diff == -1)[0]
         
-        if not contours:
-            h, w = img.shape[:2]
-            return [0, 0, w, h]
+        if len(starts) == 0:
+            return 0, 0
+            
+        # Calculate lengths of all True segments and find the longest one
+        lengths = ends - starts
+        max_idx = np.argmax(lengths)
         
-        largest_contour = max(contours, key=cv2.contourArea)
-        fx1, fy1, fw, fh = cv2.boundingRect(largest_contour)
-        return [fx1, fy1, fx1 + fw, fy1 + fh]
+        # Return inclusive start and end indices
+        return starts[max_idx], ends[max_idx] - 1
 
     @staticmethod
     def _extract_and_align_notch(img, coords, film_bbox, padding):
@@ -176,6 +181,53 @@ class Pipeline:
             })
         return candidates
 
+    def _get_film_bounding_box(self, img, strip_tolerance=0.02, patch_size=15):
+            """
+            Finds the main bounding box of the film material, adapting
+            to the dark background of the scanner bed.
+            """
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+            h, w = gray.shape
+            
+            # Safely handle images that might be smaller than our patch size
+            p_h = min(patch_size, h // 2)
+            p_w = min(patch_size, w // 2)
+            
+            # Extract the four corners of the image
+            top_left = gray[0:p_h, 0:p_w]
+            top_right = gray[0:p_h, w-p_w:w]
+            bottom_left = gray[h-p_h:h, 0:p_w]
+            bottom_right = gray[h-p_h:h, w-p_w:w]
+            
+            corners_combined = np.concatenate([
+                top_left.flatten(), top_right.flatten(), 
+                bottom_left.flatten(), bottom_right.flatten()
+            ])
+            
+            bg_median = np.median(corners_combined)
+            bg_threshold = bg_median + round(256 * 0.01)
+            
+            # Create mask of bright "film" pixels
+            film_mask = (gray > bg_threshold).astype(np.uint8)
+            
+            # Calculate fractions
+            row_fractions = np.sum(film_mask, axis=1) / w
+            col_fractions = np.sum(film_mask, axis=0) / h
+            
+            # Create boolean arrays where the strip has enough film pixels
+            valid_rows = row_fractions > strip_tolerance
+            valid_cols = col_fractions > strip_tolerance
+            
+            # Find the largest continuous block of valid rows and columns
+            y1, y2 = self._find_largest_true_segment(valid_rows)
+            x1, x2 = self._find_largest_true_segment(valid_cols)
+            
+            # Fallback if no valid segments are found
+            if y1 == y2 == 0 or x1 == x2 == 0:
+                return [0, 0, w, h]
+                
+            return [int(x1), int(y1), int(x2), int(y2)]
+
     def process_image(self, img, band_width=15, border_thresh=40, border_ratio=0.84, yolo_conf=0.15, svm_notch_noise_threshold=0.35, padding=10):
         """
         The main pipeline flow:
@@ -219,7 +271,8 @@ class Pipeline:
                 feature_vector = self.dinov2(img_tensor).cpu().numpy().flatten()
                 
             # SVM 1: Is it a Notch or Noise?
-            prob_notch = self.svm_notch_noise.predict_proba([feature_vector])[0][0]
+            notch_idx = list(self.svm_notch_noise.classes_).index('notch')
+            prob_notch = self.svm_notch_noise.predict_proba([feature_vector])[0][notch_idx]
             
             candidate_data = {
                 'coords': box['coords'], 
