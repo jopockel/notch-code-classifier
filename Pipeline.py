@@ -122,8 +122,8 @@ class Pipeline:
             "yolo_weights.pt",
             "svm_notch_noise.pkl",
             "svm_shape_grouped.pkl",
-            # "svm_direction.pkl",
-            # "dinov2_features.npz"
+            "svm_direction.pkl",
+            "dinov2_features.npz"
         ]
 
         # Check and Download Assets
@@ -145,7 +145,7 @@ class Pipeline:
             self.yolo_model = YOLO(os.path.join(assets_dir, "yolo_weights.pt"))
             self.svm_notch_noise = joblib.load(os.path.join(assets_dir,"svm_notch_noise.pkl"))
             self.svm_shape_grouped = joblib.load(os.path.join(assets_dir,"svm_shape_grouped.pkl"))
-            # self.svm_direction.pkl = joblib.load(os.path.join(assets_dir,"svm_direction.pkl"))
+            self.svm_direction = joblib.load(os.path.join(assets_dir,"svm_direction.pkl"))
         except FileNotFoundError as e:
             print(f"Error loading model files: {e}")
 
@@ -161,7 +161,7 @@ class Pipeline:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-    def get_yolo_candidates(self, img, yolo_conf=0.15, iou_threshold=0.7):
+    def get_yolo_candidates(self, img, yolo_conf=0.15, iou_threshold=0.3):
         """Ask YOLO for all possible notch candidates."""
         results = self.yolo_model.predict(
             source=img, 
@@ -290,9 +290,22 @@ class Pipeline:
 
                 candidate_data['shape'] = shape_name
                 candidate_data['shape_confidence'] = shape_confidence
-                candidate_data['needs_human_review'] = bool(shape_confidence < 0.60)
-                
-                svm_accepted.append(candidate_data)
+                candidate_data['needs_human_review'] = bool(shape_confidence < 0.65)
+
+                # SVM 2 caught it as noise
+                if shape_name == 'none':
+                    candidate_data['shape'] = 'noise'
+                    svm_rejected.append(candidate_data)
+
+                else:
+                    svm_accepted.append(candidate_data)
+
+                    if shape_name == 'sloped':
+                        direction_probs = self.svm_direction.predict_proba([feature_vector])[0]
+                        best_dir_idx = np.argmax(direction_probs)
+                        candidate_data['slope_direction'] = self.svm_direction.classes_[best_dir_idx]
+                        candidate_data['direction_confidence'] = direction_probs[best_dir_idx]
+
             else:
                 svm_rejected.append(candidate_data)
                 
