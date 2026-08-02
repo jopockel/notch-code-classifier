@@ -19,3 +19,6 @@ Training_files/runs/
 
 # Ignore downloaded assets
 assets/
+
+# Ignore results
+Results/

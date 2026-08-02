@@ -117,7 +117,7 @@ class Pipeline:
         assets_dir = os.path.join(script_dir, "assets")
         os.makedirs(assets_dir, exist_ok=True)
 
-        # Define all required assets (YOLO weights + 3 SVMs)
+        # Define all required assets (YOLO weights + 3 SVMs + dino features)
         assets = [
             "yolo_weights.pt",
             "svm_notch_noise.pkl",
@@ -161,7 +161,7 @@ class Pipeline:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-    def get_yolo_candidates(self, img, yolo_conf=0.15, iou_threshold=0.3):
+    def get_yolo_candidates(self, img, yolo_conf, iou_threshold=0.3):
         """Ask YOLO for all possible notch candidates."""
         results = self.yolo_model.predict(
             source=img, 
@@ -228,95 +228,7 @@ class Pipeline:
                 
             return [int(x1), int(y1), int(x2), int(y2)]
 
-    def generate_notch_code(self, accepted_notches, img_shape, line_tolerance=0.03):
-        """
-        Generates a notch code by grouping bounding boxes that form a line,
-        finding the dominant half-edge, and reading from center to corner.
-        Ignores the pre-assigned 'edge_location' to naturally handle corner notches.
-        
-        accepted_notches: List of notch dictionaries from process_image()
-        img_shape: Tuple of (height, width) or (height, width, channels)
-        line_tolerance: Fraction of the max image dimension to consider boxes "in line"
-        """
-        if not accepted_notches:
-            return "none"
-            
-        img_h, img_w = img_shape[:2]
-        
-        # Calculate a pixel tolerance for what constitutes a "line" (default 3% of max dimension)
-        pixel_tolerance = max(img_w, img_h) * line_tolerance
-        
-        # 1. Calculate centers for all notches
-        for n in accepted_notches:
-            x1, y1, x2, y2 = n['coords']
-            n['cx'] = (x1 + x2) / 2.0
-            n['cy'] = (y1 + y2) / 2.0
-            
-        # Helper to group notches that share an alignment axis
-        def get_aligned_groups(axis_key):
-            components = []
-            visited = set()
-            for i, n1 in enumerate(accepted_notches):
-                if i in visited: continue
-                
-                comp = [n1]
-                visited.add(i)
-                queue = [n1]
-                
-                # Group all notches that are within the tolerance threshold on this axis
-                while queue:
-                    curr = queue.pop(0)
-                    for j, n2 in enumerate(accepted_notches):
-                        if j not in visited and abs(curr[axis_key] - n2[axis_key]) < pixel_tolerance:
-                            visited.add(j)
-                            comp.append(n2)
-                            queue.append(n2)
-                components.append(comp)
-            return components
-
-        # 2. Group by horizontal lines (sharing similar cy) and vertical lines (sharing similar cx)
-        horizontal_groups = get_aligned_groups('cy')
-        vertical_groups = get_aligned_groups('cx')
-        
-        # Tag groups with the axis they vary across
-        all_groups = []
-        for g in horizontal_groups:
-            all_groups.append({'notches': g, 'varying_axis': 'cx', 'img_center': img_w / 2.0})
-        for g in vertical_groups:
-            all_groups.append({'notches': g, 'varying_axis': 'cy', 'img_center': img_h / 2.0})
-            
-        def group_score(notches):
-            return sum(n.get('svm_notch_prob', 0) for n in notches)
-            
-        # 3. Pick the dominant line of notches (absorbs corner notches automatically)
-        dominant_group_info = max(all_groups, key=lambda g: group_score(g['notches']))
-        dominant_notches = dominant_group_info['notches']
-        v_axis = dominant_group_info['varying_axis']
-        img_center = dominant_group_info['img_center']
-        
-        # 4. Split into halves (corners) to discard scattered false positives on the opposite side
-        half_1 = [n for n in dominant_notches if n[v_axis] < img_center]
-        half_2 = [n for n in dominant_notches if n[v_axis] >= img_center]
-        
-        dominant_half = half_1 if group_score(half_1) > group_score(half_2) else half_2
-        
-        if not dominant_half:
-            return "none"
-            
-        # 5. Sort from the image center towards the corner
-        dominant_half.sort(key=lambda n: abs(n[v_axis] - img_center))
-        
-        # 6. Generate the sequence string
-        code_parts = []
-        for n in dominant_half:
-            shape = n['shape']
-            if shape == 'sloped' and 'slope_direction' in n:
-                shape = f"{n['slope_direction']}"
-            code_parts.append(shape)
-            
-        return "-".join(code_parts), dominant_half
-
-    def process_image(self, img, band_width=15, border_thresh=40, border_ratio=0.84, yolo_conf=0.3, svm_notch_noise_threshold=0.2, padding=10):
+    def process_image(self, img, band_width=15, border_thresh=40, border_ratio=0.84, yolo_conf=0.3, svm_notch_noise_threshold=0.2, padding=10, human_review_treshhold=0.65):
         """
         The main pipeline flow:
         1. Check for border.
@@ -378,7 +290,7 @@ class Pipeline:
 
                 candidate_data['shape'] = shape_name
                 candidate_data['shape_confidence'] = shape_confidence
-                candidate_data['needs_human_review'] = bool(shape_confidence < 0.65)
+                candidate_data['needs_human_review'] = bool(shape_confidence < human_review_treshhold)
 
                 # SVM 2 caught it as noise
                 if shape_name == 'none':
@@ -403,6 +315,94 @@ class Pipeline:
             "rejected_notches": svm_rejected
         }
 
+    def generate_notch_code(self, accepted_notches, img_shape, line_tolerance=0.03):
+            """
+            Generates a notch code by grouping bounding boxes that form a line,
+            finding the dominant half-edge, and reading from center to corner.
+            Ignores the pre-assigned 'edge_location' to naturally handle corner notches.
+            
+            accepted_notches: List of notch dictionaries from process_image()
+            img_shape: Tuple of (height, width) or (height, width, channels)
+            line_tolerance: Fraction of the max image dimension to consider boxes "in line"
+            """
+            if not accepted_notches:
+                return "none", []
+                
+            img_h, img_w = img_shape[:2]
+            
+            # Calculate a pixel tolerance for what constitutes a "line" (default 3% of max dimension)
+            pixel_tolerance = max(img_w, img_h) * line_tolerance
+            
+            # 1. Calculate centers for all notches
+            for n in accepted_notches:
+                x1, y1, x2, y2 = n['coords']
+                n['cx'] = (x1 + x2) / 2.0
+                n['cy'] = (y1 + y2) / 2.0
+                
+            # Helper to group notches that share an alignment axis
+            def get_aligned_groups(axis_key):
+                components = []
+                visited = set()
+                for i, n1 in enumerate(accepted_notches):
+                    if i in visited: continue
+                    
+                    comp = [n1]
+                    visited.add(i)
+                    queue = [n1]
+                    
+                    # Group all notches that are within the tolerance threshold on this axis
+                    while queue:
+                        curr = queue.pop(0)
+                        for j, n2 in enumerate(accepted_notches):
+                            if j not in visited and abs(curr[axis_key] - n2[axis_key]) < pixel_tolerance:
+                                visited.add(j)
+                                comp.append(n2)
+                                queue.append(n2)
+                    components.append(comp)
+                return components
+    
+            # 2. Group by horizontal lines (sharing similar cy) and vertical lines (sharing similar cx)
+            horizontal_groups = get_aligned_groups('cy')
+            vertical_groups = get_aligned_groups('cx')
+            
+            # Tag groups with the axis they vary across
+            all_groups = []
+            for g in horizontal_groups:
+                all_groups.append({'notches': g, 'varying_axis': 'cx', 'img_center': img_w / 2.0})
+            for g in vertical_groups:
+                all_groups.append({'notches': g, 'varying_axis': 'cy', 'img_center': img_h / 2.0})
+                
+            def group_score(notches):
+                return sum(n.get('svm_notch_prob', 0) for n in notches)
+                
+            # 3. Pick the dominant line of notches (absorbs corner notches automatically)
+            dominant_group_info = max(all_groups, key=lambda g: group_score(g['notches']))
+            dominant_notches = dominant_group_info['notches']
+            v_axis = dominant_group_info['varying_axis']
+            img_center = dominant_group_info['img_center']
+            
+            # 4. Split into halves (corners) to discard scattered false positives on the opposite side
+            half_1 = [n for n in dominant_notches if n[v_axis] < img_center]
+            half_2 = [n for n in dominant_notches if n[v_axis] >= img_center]
+            
+            dominant_half = half_1 if group_score(half_1) > group_score(half_2) else half_2
+            
+            if not dominant_half:
+                return "none", []
+                
+            # 5. Sort from the image center towards the corner
+            dominant_half.sort(key=lambda n: abs(n[v_axis] - img_center))
+            
+            # 6. Generate the sequence string
+            code_parts = []
+            for n in dominant_half:
+                shape = n['shape']
+                if shape == 'sloped' and 'slope_direction' in n:
+                    shape = f"{n['slope_direction']}"
+                code_parts.append(shape)
+                
+            return "-".join(code_parts), dominant_half
+
     def process_and_code(self, img_path, **kwargs):
         """
         Processes an image file path through the full pipeline:
@@ -421,8 +421,13 @@ class Pipeline:
         
         if not results["border_present"]:
             notch_code = "none"
+            used_notches = []      
+            unused_notches = []
         else:
             notch_code, used_notches = self.generate_notch_code(results["accepted_notches"], img.shape)
+
+            used_coords = [n['coords'] for n in used_notches]
+            unused_notches = [n for n in results["accepted_notches"] if n['coords'] not in used_coords]
             
         return {
             "image_filename": os.path.basename(img_path),
@@ -430,7 +435,7 @@ class Pipeline:
             "img_height": img_h,
             "border_present": results["border_present"],
             "notch_code": notch_code,
-            "accepted_notches": results["accepted_notches"],
-            "rejected_notches": results["rejected_notches"],
-            "used_notches": used_notches
+            "rejected_notches": results["rejected_notches"],    # Noise rejected by the SVM
+            "used_notches": used_notches,                       # Valid notches that make up the code
+            "unused_notches": unused_notches,                   # Valid notches ignored by grouping logic
         }
