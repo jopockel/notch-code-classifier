@@ -228,7 +228,7 @@ class Pipeline:
                 
             return [int(x1), int(y1), int(x2), int(y2)]
 
-    def process_image(self, img, band_width=15, border_thresh=40, border_ratio=0.84, yolo_conf=0.3, svm_notch_noise_threshold=0.2, padding=10, human_review_treshhold=0.65):
+    def process_image(self, img, band_width=15, border_thresh=40, border_ratio=0.84, yolo_conf=0.2, svm_notch_noise_threshold=0.2, padding=10, human_review_treshhold=0.65):
         """
         The main pipeline flow:
         1. Check for border.
