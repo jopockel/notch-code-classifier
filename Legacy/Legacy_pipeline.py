@@ -164,10 +164,7 @@ class LegacyPipeline:
             if n_vertices >= 8 and circularity > 0.6:
                 shape = "circle"
             elif n_vertices == 4:
-                if 0.8 <= aspect <= 1.25:
-                    shape = "square"
-                else:
-                    shape = "rectangle"
+                shape = "rectangle"
             elif n_vertices == 3:
                 shape = "triangle"
             else:
@@ -189,21 +186,21 @@ class LegacyPipeline:
         return labels
 
     def process_image(self, 
-        img, 
+        img_path, 
         perimeter_band_width=15, 
         notch_band_width=125, 
         dark_threshold=40, 
         border_ratio=0.84, 
         use_adaptive_threshold=False,
-        adaptive_block_size=25,
-        adaptive_c=10,
-        adaptive_use_gaussian=False,
-        peak_safety_margin=19,
-        filter_min_area=200,
-        filter_max_area=1500,
+        adaptive_block_size=37,
+        adaptive_c=8,
+        adaptive_use_gaussian=True,
+        peak_safety_margin=1,
+        filter_min_area=50,
+        filter_max_area=4000,
         shape_min_area=50,
         shape_epsilon_mult=0.04,
-        box_padding=25):
+        box_padding=16):
         """
         The main pipeline flow mimicking the ML process_image method:
         1. Check for border.
@@ -211,6 +208,10 @@ class LegacyPipeline:
         3. Extract concavities using Global Convex Hull.
         4. Filter by geometry and classify shapes.
         """
+        img = cv2.imread(img_path)
+        if img is None:
+            return None
+        
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
         
         # 1. Check for border
